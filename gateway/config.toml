@@ -1,14 +1,27 @@
 gateway_public_url = "http://localhost:8000"
+# when true, the gateway onboards itself as a CAPIF provider, publishes the CAMARA APIs to CAPIF,
+# and requires callers of those APIs to present a valid CAPIF-issued invoker access token
+gsma_apis_protected_by_capif = false
+
 
 [nef]
+# nef url is ignroed when using capif auth mode, as the url is obtained from capif during registration
 url = "http://localhost:8888"
 base_path = "/nef/api/v1/"
 
 gateway_af_id = "camara"
 gateway_notification_url = "http://host.docker.internal:8000"
 
+auth_mode = "nef"
 username = "admin@my-email.com"
 password = "pass"
+
+
+[capif_sdk]
+capif_username = "gsma_provider_invoker"
+capif_password = "password"
+# offboard the CAPIF provider and unpublish its services on shutdown (useful for dev/testing so re-onboarding doesn't hit "already registered" errors)
+cleanup_on_shutdown = false
 
 
 [sms_otp]
@@ -29,8 +42,10 @@ backend = "nef"
 [qod_provisioning]
 backend = "nef"
 
+
 [qod]
 backend = "nef"
+
 
 [geofencing]
 backend = "nef"
@@ -39,5 +54,18 @@ backend = "nef"
 [reachability_status]
 backend = "nef"
 
+
 [roaming_status]
 backend = "nef"
+
+
+[application_profiles]
+backend = "redis"
+
+
+[connectivity_insights_subscriptions]
+backend = "nef"
+offset_period = -5
+temporal_gran_size = 5
+rep_period = 5
+

@@ -1,11 +1,13 @@
+import json
 import types
 import typing
 import logging
 from enum import Enum
 from collections.abc import Generator
+from pathlib import Path
 from typing import Annotated, Any, Literal, Optional, TypeAliasType, Union
 
-from pydantic import AnyHttpUrl, BaseModel, Field, PositiveInt, RedisDsn
+from pydantic import AfterValidator, AnyHttpUrl, BaseModel, Field, PositiveInt, RedisDsn, ValidationInfo, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
@@ -14,7 +16,14 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
+from app.capif import CAPIF_SDK_CONFIG_PATH
+
 LogLevel = Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"]
+
+
+class NEFAuthMode(str, Enum):
+    NEF = "nef"
+    CAPIF = "capif"
 
 
 class NEFSettings(BaseModel):
@@ -24,8 +33,15 @@ class NEFSettings(BaseModel):
     gateway_af_id: str
     gateway_notification_url: AnyHttpUrl
 
-    username: str
-    password: str
+    auth_mode: NEFAuthMode = NEFAuthMode.NEF
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_auth_credentials(self) -> "NEFSettings":
+        if self.auth_mode == NEFAuthMode.NEF and (not self.username or not self.password):
+            raise ValueError("username and password are required when auth_mode is 'nef'")
+        return self
 
     def get_base_url(self) -> str:
         stripped_url = str(self.url).rstrip("/")
@@ -144,6 +160,81 @@ class NEFSettingsHierachySettingsSource(PydanticBaseSettingsSource):
                     )
 
         return values
+
+
+def requires_enabled_backend(dependency_field: str) -> AfterValidator:
+    """Field annotation that raises if this field's backend is enabled while the given dependency backend is disabled."""
+    def _validator(v: Any, info: ValidationInfo) -> Any:
+        dependency = info.data.get(dependency_field)
+        if dependency is not None and v.backend != "disabled" and dependency.backend == "disabled":
+            raise ValueError(f"requires '{dependency_field}' to be enabled")
+        return v
+    return AfterValidator(_validator)
+
+
+class AppProfilesBackend(str, Enum):
+    Disabled = "disabled"
+    Redis = "redis"
+
+
+class BaseAppProfilesSettings(BaseModel):
+    pass
+
+
+class DisabledAppProfilesSettings(BaseAppProfilesSettings):
+    backend: Literal[AppProfilesBackend.Disabled] = AppProfilesBackend.Disabled
+
+
+class RedisAppProfilesSettings(BaseAppProfilesSettings):
+    backend: Literal[AppProfilesBackend.Redis] = AppProfilesBackend.Redis
+
+
+type AppProfilesSettings = Annotated[
+    DisabledAppProfilesSettings | RedisAppProfilesSettings,
+    Field(discriminator="backend"),
+]
+
+
+class ConnectivityInsightsSubscriptionsBackend(str, Enum):
+    Disabled = "disabled"
+    NEF = "nef"
+
+
+class BaseConnectivityInsightsSubscriptionsSettings(BaseModel):
+    pass
+
+
+class DisabledConnectivityInsightsSubscriptionsSettings(
+    BaseConnectivityInsightsSubscriptionsSettings
+):
+    backend: Literal[ConnectivityInsightsSubscriptionsBackend.Disabled] = (
+        ConnectivityInsightsSubscriptionsBackend.Disabled
+    )
+
+
+class NEFConnectivityInsightsSubscriptionsSettings(
+    BaseConnectivityInsightsSubscriptionsSettings
+):
+    backend: Literal[ConnectivityInsightsSubscriptionsBackend.NEF] = (
+        ConnectivityInsightsSubscriptionsBackend.NEF
+    )
+    nef: NEFSettings
+    offset_period: Annotated[int, Field(le=-1)] = -5                        # negative (historic data) - in seconds
+    temporal_gran_size: Annotated[int, Field(ge=1)] = 5                     # in seconds
+    rep_period: Annotated[int, Field(ge=1)] = 5                             # in seconds
+
+    @model_validator(mode="after")
+    def validate_temporal_gran_size(self) -> "NEFConnectivityInsightsSubscriptionsSettings":
+        if self.temporal_gran_size < abs(self.offset_period):
+            raise ValueError("temporal_gran_size must be >= abs(offset_period)")
+        return self
+
+
+type ConnectivityInsightsSubscriptionsSettings = Annotated[
+    DisabledConnectivityInsightsSubscriptionsSettings
+    | NEFConnectivityInsightsSubscriptionsSettings,
+    Field(discriminator="backend"),
+]
 
 
 class SMSBackend(str, Enum):
@@ -364,6 +455,35 @@ class RedisSettings(BaseModel):
     password: Optional[str] = None
 
 
+class CAPIFSDKSettings(BaseModel):
+    capif_host: str = "capifcore"
+    register_host: str = "capifcore"
+    capif_https_port: PositiveInt = 443
+    capif_register_port: PositiveInt = 8084
+    debug_mode: bool = True
+    capif_username: Optional[str] = None
+    capif_password: Optional[str] = None
+    capif_callback_url: str = "http://your-callback-host/callback/"
+    cleanup_on_shutdown: bool = False
+
+    @model_validator(mode="after")
+    def fill_json_opencapif_sdk_config(self) -> "CAPIFSDKSettings":
+        config_path = Path(CAPIF_SDK_CONFIG_PATH)
+        config = json.loads(config_path.read_text())
+        config.update({
+            "capif_host": self.capif_host,
+            "register_host": self.register_host,
+            "capif_https_port": str(self.capif_https_port),
+            "capif_register_port": str(self.capif_register_port),
+            "debug_mode": str(self.debug_mode),
+            "capif_username": self.capif_username,
+            "capif_password": self.capif_password,
+        })
+        config["invoker"]["capif_callback_url"] = self.capif_callback_url
+        config_path.write_text(json.dumps(config, indent=4))
+        return self
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         toml_file="config.toml",
@@ -377,6 +497,10 @@ class Settings(BaseSettings):
     redis: RedisSettings = RedisSettings()
 
     gateway_public_url: AnyHttpUrl = AnyHttpUrl("http://localhost:8000")
+    gsma_apis_protected_by_capif: bool = False
+
+    capif_sdk: CAPIFSDKSettings = CAPIFSDKSettings()
+
 
     nef: Optional[NEFSettings] = None
 
@@ -390,6 +514,22 @@ class Settings(BaseSettings):
     geofencing: GeofencingSettings = DisabledGeofencingSettings()
     qod: QodSettings = DisabledQodSettings()
     roaming_status: RoamingStatusSettings = DisabledRoamingStatusSettings()
+    application_profiles: AppProfilesSettings = DisabledAppProfilesSettings()
+    connectivity_insights_subscriptions: Annotated[
+        ConnectivityInsightsSubscriptionsSettings,
+        requires_enabled_backend("application_profiles"),
+    ] = DisabledConnectivityInsightsSubscriptionsSettings()
+
+    @model_validator(mode="after")
+    def validate_capif_sdk_credentials(self) -> "Settings":
+        nef_uses_capif = self.nef is not None and self.nef.auth_mode == NEFAuthMode.CAPIF
+        if nef_uses_capif or self.gsma_apis_protected_by_capif:
+            if not self.capif_sdk.capif_username or not self.capif_sdk.capif_password:
+                raise ValueError(
+                    "capif_username and capif_password are required when NEF auth_mode is CAPIF and/or "
+                    "when the CAMARA APIs are protected by CAPIF"
+                )
+        return self
 
     @classmethod
     def settings_customise_sources(

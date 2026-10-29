@@ -1,33 +1,111 @@
+import uuid
+from contextlib import asynccontextmanager
+
+import fastapi
+from pydantic import TypeAdapter, ValidationError
+
+from app import dev_patches # noqa: F401
+import logging
 from typing import Any
 from collections.abc import Awaitable, Callable
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.openapi.utils import get_openapi
 from fastapi.requests import Request
 from fastapi.responses import Response
 
 from app import drivers, endpoints, probes
+from app.capif.invoker import capif_invoker
+from app.capif.provider import capif_provider
+from app.capif.logging import CAPIFLoggingMiddleware
+from app.capif.deps import get_nef_capif_token, verify_capif_invoker_token
 from app.exception_handlers import install_exception_handlers
+from app.exceptions import BadRequest
+from app.schemas.common import XCorrelator
+from app.settings import NEFAuthMode, settings
 
-app = FastAPI()
+# Remove OpenCAPIF SDK logging file handlers from root
+root_logger = logging.getLogger()
+root_logger.handlers = [
+    h for h in root_logger.handlers
+    if not (
+        isinstance(h, logging.FileHandler) and
+        h.baseFilename.endswith(("sdk_logs.log", "builder_logs.log"))
+    )
+]
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if settings.nef is not None and settings.nef.auth_mode == NEFAuthMode.CAPIF:
+        capif_invoker.startup()
+    if settings.gsma_apis_protected_by_capif:
+        capif_provider.startup(app)
+
+    yield
+
+    if settings.nef is not None and settings.nef.auth_mode == NEFAuthMode.CAPIF:
+        capif_invoker.shutdown()
+    if settings.gsma_apis_protected_by_capif:
+        capif_provider.shutdown()
+
+dependencies = []
+if settings.nef is not None and settings.nef.auth_mode == NEFAuthMode.CAPIF:
+    dependencies.append(Depends(get_nef_capif_token))
+
+app = FastAPI(
+    lifespan=lifespan,
+    dependencies=dependencies,
+    separate_input_output_schemas=False
+)
+
+# CAPIF invocation logging disabled: middleware left unwired on purpose
+# if settings.gsma_apis_protected_by_capif:
+#     app.add_middleware(CAPIFLoggingMiddleware)
+
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],  # or ["*"] for dev
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(probes.router)
-app.include_router(endpoints.router)
+app.include_router(
+    endpoints.router,
+    dependencies=[Depends(verify_capif_invoker_token)] if settings.gsma_apis_protected_by_capif else [],
+)
 app.include_router(drivers.router, include_in_schema=False)
 
 install_exception_handlers(app)
+
+
+_x_correlator_type_adapter = TypeAdapter(XCorrelator)
 
 
 @app.middleware("http")
 async def add_correlation_header(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
-    x_correlator = request.headers.get("x-correlator")
+    logging.info("DELAY: Request arrived (path=%s)", request.url.path)
+
+    x_correlator_header = request.headers.get("x-correlator")
+
+    try:
+        x_correlator = _x_correlator_type_adapter.validate_python(
+            x_correlator_header if x_correlator_header is not None else str(uuid.uuid4())
+        )
+    except ValidationError:
+        raise BadRequest(message="Invalid X-Correlator header")
+
+    request.state.x_correlator = x_correlator
 
     response = await call_next(request)
+    response.headers["x-correlator"] = x_correlator
 
-    if x_correlator is not None:
-        response.headers["x-correlator"] = x_correlator
-
+    logging.info("DELAY: Request responded (path=%s)", request.url.path)
     return response
 
 
@@ -39,26 +117,24 @@ def custom_openapi() -> dict[str, Any]:
         title="GSMA Open Gateway",
         version="0.1.0",
         routes=app.routes,
+        separate_input_output_schemas=app.separate_input_output_schemas,
     )
 
-    x_correlator_schema = {
-        "type": "string",
-        "pattern": "^[a-zA-Z0-9-]{0,55}$",
-        "example": "b4333c46-49c0-4f62-80d7-f0ef930f1c46",
-    }
+    x_correlator_schema = _x_correlator_type_adapter.json_schema()
+    x_correlator_description = x_correlator_schema.get("description", "")
 
     components = openapi_schema.setdefault("components", {})
     c_parameters = components.setdefault("parameters", {})
     c_parameters["x-correlator"] = {
         "name": "x-correlator",
         "in": "header",
-        "description": "Correlation id for the different services",
+        "description": x_correlator_description,
         "required": False,
         "schema": x_correlator_schema,
     }
     c_headers = components.setdefault("headers", {})
     c_headers["x-correlator"] = {
-        "description": "Correlation id for the different services",
+        "description": x_correlator_description,
         "schema": x_correlator_schema,
     }
 

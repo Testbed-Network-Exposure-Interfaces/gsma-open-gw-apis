@@ -1,0 +1,116 @@
+{
+    "capif_host": "capifcore",
+    "register_host": "capifcore",
+    "capif_https_port": "443",
+    "capif_register_port": "8084",
+    "capif_username": "gsma_provider_invoker",
+    "capif_password": "password",
+    "debug_mode": "True",
+    "invoker": {
+        "invoker_folder": "invoker",
+        "capif_callback_url": "http://your-callback-host/callback/",
+        "supported_features": "",
+        "check_authentication_data": {
+            "ip": "",
+            "port": ""
+        },
+        "cert_generation": {
+            "csr_common_name": "gsma-open-gateway-invoker",
+            "csr_organizational_unit": "gsma-open-gateway",
+            "csr_organization": "IT-Aveiro",
+            "csr_locality": "Aveiro",
+            "csr_state_or_province_name": "Aveiro",
+            "csr_country_name": "PT",
+            "csr_email_address": "gateway-invoker@example.com"
+        },
+        "discover_filter": {
+            "api-name": "",
+            "api-version": "",
+            "comm-type": "",
+            "protocol": "",
+            "aef-id": "",
+            "data-format": "",
+            "api-cat": "",
+            "preferred-aef-loc": "",
+            "req-api-prov-name": "",
+            "supported-features": "",
+            "api-supported-features": "",
+            "ue-ip-addr": "",
+            "service-kpis": ""
+        },
+        "events": {
+            "description": [
+                ""
+            ],
+            "eventFilters": [
+                {
+                    "apiIds": [
+                        ""
+                    ],
+                    "apiInvokerIds": [
+                        ""
+                    ],
+                    "aefIds": [
+                        ""
+                    ]
+                }
+            ]
+        }
+    },
+    "provider": {
+        "provider_folder": "app/capif/certificates",
+        "supported_features": "",
+        "cert_generation": {
+            "csr_common_name": "gsma-open-gateway-provider",
+            "csr_organizational_unit": "gsma-open-gateway-provider",
+            "csr_organization": "IT-Aveiro",
+            "csr_locality": "Aveiro",
+            "csr_state_or_province_name": "Aveiro",
+            "csr_country_name": "PT",
+            "csr_email_address": "gateway-provider@example.com"
+        },
+        "apfs": "1",
+        "aefs": "1",
+        "publish_req": {
+            "service_api_id": "",
+            "publisher_apf_id": "",
+            "publisher_aefs_ids": [
+                "",
+                ""
+            ]
+        },
+        "api_description_path": "",
+        "events": {
+            "description": [
+                ""
+            ],
+            "eventFilters": [
+                {
+                    "apiIds": [
+                        ""
+                    ],
+                    "apiInvokerIds": [
+                        ""
+                    ],
+                    "aefIds": [
+                        ""
+                    ]
+                }
+            ],
+            "notificationDestination": "",
+            "websockNotifConfig": {
+                "websocketUri": "",
+                "requestWebsocketUri": false
+            }
+        },
+        "log": {
+            "apiName": "gsma-open-gateway",
+            "apiVersion": "",
+            "resourceName": "",
+            "uri": "",
+            "protocol": "",
+            "operation": "",
+            "result": ""
+        }
+    }
+}
