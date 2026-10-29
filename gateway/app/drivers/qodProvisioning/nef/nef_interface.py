@@ -261,7 +261,9 @@ class NEFQoDProvisioningInterface(QoDProvisioningInterface):
             raise ResourceNotFound()
 
         await self.httpx_client_callback.post(
-            str(sink), content=cloud_event.model_dump_json(exclude_unset=True)
+            str(sink),
+            content=cloud_event.model_dump_json(exclude_unset=True),
+            headers={"Content-Type": "application/json"},
         )
 
         await self._save_subscription_info(id, sub_info)
